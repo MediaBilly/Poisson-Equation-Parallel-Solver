@@ -190,6 +190,16 @@ int main(int argc, char **argv)
         u = tmp;
     }
 
+    #define DEST(XX,YY) u[(YY)*(n+2)+(XX)]
+
+    for(int i = 1; i < m+1; i++) {
+        for(int j = 1; j < n+1; j++) {
+            printf("%lf ", DEST(j,i));
+        }
+
+        printf("\n");
+    }
+
     free(fx_thing_buf);
 
     t2 = MPI_Wtime();
