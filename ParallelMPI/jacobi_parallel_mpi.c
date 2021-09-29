@@ -89,11 +89,13 @@ int main(int argc, char **argv)
     int n, m, mits;
     double alpha, tol, relax;
     double square_error, absolute_square_error;
+    double totalTime;
     int totalProcesses, myRank;
     int dim;
 
     // Initialize MPI
     MPI_Init(&argc, &argv);
+    MPI_Pcontrol(0);
 
     // Get number of total processes
     MPI_Comm_size(MPI_COMM_WORLD, &totalProcesses);
@@ -113,6 +115,10 @@ int main(int argc, char **argv)
 
     // Read input
     Get_input(myRank, totalProcesses, &n, &m, &mits, &alpha, &tol, &relax);
+
+    if (myRank == 0) {
+        printf("Grid size: %dx%d\nProcesses: %d\n", n, m, totalProcesses);
+    }
 
     // Create cartesian topology
     int ndims = 2, reorder = 1, periods[2], dimSize[2];
@@ -179,7 +185,7 @@ int main(int argc, char **argv)
     double xStart = xLeft + my_coords[1] * columns * deltaX;
     double yStart = yUp - (my_coords[0] + 1) * rows * deltaY;
 
-    printf("Process %d (%d, %d) dimension:(%d,%d), start coords: (%lf, %lf)\n", myRank, my_coords[0], my_coords[1], columns, rows, xStart, yStart);
+    // printf("Process %d (%d, %d) dimension:(%d,%d), start coords: (%lf, %lf)\n", myRank, my_coords[0], my_coords[1], columns, rows, xStart, yStart);
 
     // Coefficients
     double cx = 1.0/(deltaX*deltaX);
@@ -190,6 +196,7 @@ int main(int argc, char **argv)
     double local_square_error = HUGE_VAL;
 
     double t1 = MPI_Wtime();
+    MPI_Pcontrol(1);
 
     double *fx_thing_buf = (double*)malloc((columns+2)*sizeof(double));
     /* Iterate as long as it takes to meet the convergence criterion */
@@ -323,9 +330,14 @@ int main(int argc, char **argv)
     }
 
     double t2 = MPI_Wtime();
-    printf("Process %d MPI_Wtime = %lf \n", myRank, t2 - t1);
+    MPI_Pcontrol(0);
 
-    free(fx_thing_buf);
+    double localTime = t2 - t1;
+    // Calculate total time(max time of all processes)
+    MPI_Reduce(&localTime, &totalTime, 1, MPI_DOUBLE, MPI_MAX, 0, cartComm);
+    if (myRank == 0) {
+        printf("Elapsed MPI Wall time: %f\n", totalTime);
+    }
 
     // Calculate total residual
     MPI_Reduce(&local_square_error, &square_error, 1, MPI_DOUBLE, MPI_SUM, 0, cartComm);
@@ -343,6 +355,11 @@ int main(int argc, char **argv)
     // Free data types
     MPI_Type_free(&row_t);
     MPI_Type_free(&col_t);
+
+    // Free allocated space
+    free(u);
+    free(u_old);
+    free(fx_thing_buf);
 
     // Close MPI
     MPI_Finalize();
