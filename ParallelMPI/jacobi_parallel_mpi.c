@@ -104,7 +104,8 @@ int main(int argc, char **argv)
     // Check if it is valid for the current problem(perfect square)
     // dim is the # of blocks(processes) per row or column
     dim = (int)sqrt(totalProcesses);
-    if (dim * dim != totalProcesses) {
+
+    if (totalProcesses != 80 && dim * dim != totalProcesses) {
         if (myRank == 0) {
             fprintf(stderr, "Given # of processes is not a perfect square.\n");
         }
@@ -123,8 +124,16 @@ int main(int argc, char **argv)
     // Create cartesian topology
     int ndims = 2, reorder = 1, periods[2], dimSize[2];
     MPI_Comm cartComm;
-    dimSize[0] = dim;
-    dimSize[1] = dim;
+
+    if(totalProcesses != 80) {
+        dimSize[0] = dim;
+        dimSize[1] = dim;
+    }
+    else {
+        dimSize[0] = 10;
+        dimSize[1] = totalProcesses / dimSize[0];
+    }
+    
     periods[0] = periods[1] = 0;
     MPI_Cart_create(MPI_COMM_WORLD, ndims, dimSize, periods, reorder, &cartComm);
 
@@ -143,7 +152,7 @@ int main(int argc, char **argv)
     // printf("Process %d(%d, %d) of %d --> NORTH: %d, SOUTH: %d, WEST: %d, EAST: %d, ARGUMENTS: %d, %d, %d, %lf, %lf, %lf\n", myRank, my_coords[0], my_coords[1], totalProcesses, neighbours[NORTH], neighbours[SOUTH], neighbours[WEST], neighbours[EAST], n, m, mits, alpha, tol, relax);
 
     // Create subgrid on each process
-    int columns = n/dim, rows = m/dim;
+    int columns = n/dimSize[0], rows = m/dimSize[1];
     double *u, *u_old, *tmp;
     int maxXcount = columns+2, maxYcount = rows+2;
     int allocCount = maxXcount*maxYcount;
