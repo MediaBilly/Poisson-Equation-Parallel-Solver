@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include <mpi.h>
+#include <omp.h>
 
 #define NORTH 0
 #define EAST 1
@@ -209,8 +210,6 @@ int main(int argc, char **argv)
     iterationCount = 0;
     double local_square_error = HUGE_VAL;
 
-    printf("Process %d rows=%d,columns=%d\n", myRank, rows, columns);
-
     double t1 = MPI_Wtime();
     MPI_Pcontrol(1);
 
@@ -249,11 +248,60 @@ int main(int argc, char **argv)
         double updateVal;
         double f;
 
+        #pragma omp parallel for reduction(+:local_square_error) collapse(2)
+        for (y = 2; y < (maxYcount-2); y++)
+        {
+            for (x = 2; x < (maxXcount-2); x++)
+            {
+                fY = yStart + (y-1)*deltaY;
+                fy_thing = 1.0-fY*fY;
+                if(y == 2 && iterationCount == 0) {
+                    fX = xStart + (x-1)*deltaX;
+                    fx_thing_buf[x-1] = 1.0-fX*fX;
+                }
+                
+                f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
+
+                updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
+                                (SRC(x,y-1) + SRC(x,y+1))*cy +
+                                SRC(x,y)*cc - f
+                            )/cc;
+
+                DST(x,y) = SRC(x,y) - relax*updateVal;
+                local_square_error += updateVal*updateVal;
+            }
+            
+        }
+        // Wait for the 4 halos to be received
+        MPI_Waitall(4, receive_requests, receive_status);
+
+        // Calculate the values of the 4 outer rows and columns which depend on the received halos (to u)
+        // Calculate 1st horizontal row
+        fY = yStart;
+        fy_thing = 1.0-fY*fY;
+
+        #pragma omp parallel for reduction (+:local_square_error)
+        for (x = 1; x < (maxXcount-1); x++)
+        {            
+            f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
+
+            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
+                            (SRC(x,y-1) + SRC(x,y+1))*cy +
+                            SRC(x,y)*cc - f
+                        )/cc;
+
+            DST(x,y) = SRC(x,y) - relax*updateVal;
+            local_square_error += updateVal*updateVal;
+        }
+        
+        // Calculate verical columns
+        // #pragma omp parallel for reduction (+:local_square_error)
         for (y = 2; y < (maxYcount-2); y++)
         {
             fY = yStart + (y-1)*deltaY;
             fy_thing = 1.0-fY*fY;
-            for (x = 2; x < (maxXcount-2); x++)
+            
+            for (x = 1; x < (maxXcount-1); x += maxXcount-3)
             {
                 if(y == 2 && iterationCount == 0) {
                     fX = xStart + (x-1)*deltaX;
@@ -271,57 +319,13 @@ int main(int argc, char **argv)
                 local_square_error += updateVal*updateVal;
             }
         }
-        // Wait for the 4 halos to be received
-        MPI_Waitall(4, receive_requests, receive_status);
-
-        // Calculate the values of the 4 outer rows and columns which depend on the received halos (to u)
-        // Calculate 1st horizontal row
-        y = 1;
-        fY = yStart;
-        fy_thing = 1.0-fY*fY;
-        for (x = 1; x < (maxXcount-1); x++)
-        {            
-            if ((x == 1 || x == maxXcount - 2) && iterationCount == 0) {
-                fX = xStart + (x-1)*deltaX;
-                fx_thing_buf[x-1] = 1.0-fX*fX;
-            }
-            f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
-
-            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
-                        )/cc;
-
-            DST(x,y) = SRC(x,y) - relax*updateVal;
-            local_square_error += updateVal*updateVal;
-        }
-        
-        // Calculate verical columns
-        for (y = 2; y < (maxYcount-2); y++)
-        {
-            fY = yStart + (y-1)*deltaY;
-            fy_thing = 1.0-fY*fY;
-            
-            for (x = 1; x < (maxXcount-1); x += maxXcount-3)
-            {
-                f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
-
-                updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                                (SRC(x,y-1) + SRC(x,y+1))*cy +
-                                SRC(x,y)*cc - f
-                            )/cc;
-
-                DST(x,y) = SRC(x,y) - relax*updateVal;
-                local_square_error += updateVal*updateVal;
-            }
-        }
 
         // Calculate last horizontal row
-        y = maxYcount-2;
-        fY = yStart + (y-1)*deltaY;
+        fY = yStart + (maxYcount-3)*deltaY;
         fy_thing = 1.0-fY*fY;
-        
-        for (x = 1; x < (maxXcount-1); x++)
+
+        #pragma omp parallel for reduction(+:local_square_error)
+        for (int x = 1; x < (maxXcount-1); x++)
         {
             f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
 

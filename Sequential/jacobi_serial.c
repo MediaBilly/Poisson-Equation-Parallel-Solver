@@ -38,57 +38,6 @@
 #include <time.h>
 #include <mpi.h>
 
-/*************************************************************
- * Performs one iteration of the Jacobi method and computes
- * the residual value.
- *
- * NOTE: u(0,*), u(maxXCount-1,*), u(*,0) and u(*,maxYCount-1)
- * are BOUNDARIES and therefore not part of the solution.
- *************************************************************/
-inline double one_jacobi_iteration(double xStart, double yStart,
-                            int maxXCount, int maxYCount,
-                            double *src, double *dst,
-                            double deltaX, double deltaY,
-                            double alpha, double omega, double *fx_thing, int iteration)
-{
-#define SRC(XX,YY) src[(YY)*maxXCount+(XX)]
-#define DST(XX,YY) dst[(YY)*maxXCount+(XX)]
-    int x, y;
-    double fX, fY, fy_thing;
-    // double fx_thing[maxXCount];
-    double error = 0.0;
-    double updateVal;
-    double f;
-    // Coefficients
-    double cx = 1.0/(deltaX*deltaX);
-    double cy = 1.0/(deltaY*deltaY);
-    double cc = -2.0*cx-2.0*cy-alpha;
-
-
-    for (y = 1; y < (maxYCount-1); y++)
-    {
-        fY = yStart + (y-1)*deltaY;
-        fy_thing = 1.0-fY*fY;
-        for (x = 1; x < (maxXCount-1); x++)
-        {
-            if(y == 1 && iteration == 0) {
-                fX = xStart + (x-1)*deltaX;
-                fx_thing[x-1] = 1.0-fX*fX;
-            }
-            
-            f = -alpha*fx_thing[x-1]*fy_thing - 2.0*fx_thing[x-1] - 2.0*fy_thing;
-            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                			(SRC(x,y-1) + SRC(x,y+1))*cy +
-                			SRC(x,y)*cc - f
-						)/cc;
-            DST(x,y) = SRC(x,y) - omega*updateVal;
-            error += updateVal*updateVal;
-        }
-    }
-    return sqrt(error)/((maxXCount-2)*(maxYCount-2));
-}
-
-
 /**********************************************************
  * Checks the error between numerical and exact solutions
  **********************************************************/
@@ -96,7 +45,7 @@ double checkSolution(double xStart, double yStart,
                      int maxXCount, int maxYCount,
                      double *u,
                      double deltaX, double deltaY,
-                     double alpha)
+                     double alpha, double *fx_thing, double *fy_thing)
 {
 #define U(XX,YY) u[(YY)*maxXCount+(XX)]
     int x, y;
@@ -105,11 +54,9 @@ double checkSolution(double xStart, double yStart,
 
     for (y = 1; y < (maxYCount-1); y++)
     {
-        fY = yStart + (y-1)*deltaY;
         for (x = 1; x < (maxXCount-1); x++)
         {
-            fX = xStart + (x-1)*deltaX;
-            localError = U(x,y) - (1.0-fX*fX)*(1.0-fY*fY);
+            localError = U(x,y) - fx_thing[x-1]*fy_thing[y-1];
             error += localError*localError;
         }
     }
@@ -149,11 +96,6 @@ int main(int argc, char **argv)
     
 //    printf("allocCount=%d u=%p u_old=%p\n", allocCount, u, u_old);
     
-    if (u == NULL || u_old == NULL)
-    {
-        printf("Not enough memory for two %ix%i matrices\n", n+2, m+2);
-        exit(1);
-    }
     maxIterationCount = mits;
     maxAcceptableError = tol;
 
@@ -166,41 +108,66 @@ int main(int argc, char **argv)
 
     iterationCount = 0;
     error = HUGE_VAL;
+
+    double *fx_thing = (double*)malloc(n*sizeof(double));
+    double *fy_thing = (double*)malloc(m*sizeof(double));
+
+    if (u == NULL || u_old == NULL || fx_thing == NULL || fy_thing == NULL) {
+        printf("Not enough memory for two %ix%i matrices\n", n+2, m+2);
+        exit(1);
+    }
+
+    // Precalucate stuff to save time
+
+    int x,y;
+    for (x = 1; x < n+1; x++) {
+        double fX = xLeft + (x-1)*deltaX;
+        fx_thing[x-1] = 1.0-fX*fX;
+    }
+
+    for (y = 1; y < m+1; y++) {
+        double fY = yBottom + (y-1)*deltaY;
+        fy_thing[y-1] = 1.0-fY*fY;
+    }
+
+    // Coefficients
+    double cx = 1.0/(deltaX*deltaX);
+    double cy = 1.0/(deltaY*deltaY);
+    double cc = -2.0*cx-2.0*cy-alpha;
+
+    #define SRC(XX,YY) u_old[(YY)*(n+2)+(XX)]
+    #define DST(XX,YY) u[(YY)*(n+2)+(XX)]
+    double updateVal, f;
+
     clock_t start = clock(), diff;
     
     MPI_Init(NULL,NULL);
     t1 = MPI_Wtime();
 
-    double *fx_thing_buf = (double*)malloc((n+2)*sizeof(double));
-
     /* Iterate as long as it takes to meet the convergence criterion */
     while (iterationCount < maxIterationCount && error > maxAcceptableError)
     {    	
-//        printf("Iteration %i", iterationCount);
-        error = one_jacobi_iteration(xLeft, yBottom,
-                                     n+2, m+2,
-                                     u_old, u,
-                                     deltaX, deltaY,
-                                     alpha, relax, fx_thing_buf, iterationCount);
-//        printf("\tError %g\n", error);
+        error = 0.0;
+        for (y = 1; y < m+1; y++)
+        {
+            for (x = 1; x < n+1; x++)
+            {
+                f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
+                updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
+                                (SRC(x,y-1) + SRC(x,y+1))*cy +
+                                SRC(x,y)*cc - f
+                            )/cc;
+                DST(x,y) = SRC(x,y) - relax*updateVal;
+                error += updateVal*updateVal;
+            }
+        }
+        error = sqrt(error)/(n*m);
         iterationCount++;
         // Swap the buffers
         tmp = u_old;
         u_old = u;
         u = tmp;
     }
-
-    #define DEST(XX,YY) u[(YY)*(n+2)+(XX)]
-
-    for(int i = 1; i < m+1; i++) {
-        for(int j = 1; j < n+1; j++) {
-            printf("%lf ", DEST(j,i));
-        }
-
-        printf("\n");
-    }
-
-    free(fx_thing_buf);
 
     t2 = MPI_Wtime();
     printf( "Iterations=%3d Elapsed MPI Wall time is %f\n", iterationCount, t2 - t1 ); 
@@ -217,8 +184,11 @@ int main(int argc, char **argv)
                                          n+2, m+2,
                                          u_old,
                                          deltaX, deltaY,
-                                         alpha);
+                                         alpha, fx_thing, fy_thing);
     printf("The error of the iterative solution is %g\n", absoluteError);
+
+    free(fy_thing);
+    free(fx_thing);
 
     return 0;
 }
