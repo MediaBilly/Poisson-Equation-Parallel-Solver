@@ -10,10 +10,10 @@
 #PBS -l walltime=00:20:00
 
 # How many nodes and tasks per node
-#PBS -l select=10:ncpus=8:mpiprocs=8:mem=16400000kb
+#PBS -l select=4:ncpus=8:mpiprocs=7:mem=16400000kb
 
 #Change Working directory to SUBMIT directory
 cd $PBS_O_WORKDIR
 
 # Run executable #
-mpirun -np 80 jacobi_parallel_mpi.x < input
+mpirun -np 25 jacobi_parallel_mpi.x < input

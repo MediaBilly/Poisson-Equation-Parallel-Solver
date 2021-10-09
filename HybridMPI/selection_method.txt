@@ -1,0 +1,3 @@
+best distribution=2p/4t
+select=ceil(wanted_threads/8)
+-np wanted_threads/4

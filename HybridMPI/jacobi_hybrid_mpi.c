@@ -94,7 +94,6 @@ int main(int argc, char **argv)
     double residual; // Used if convergence check is on
     double totalTime;
     unsigned int totalProcesses, myRank;
-    unsigned int dim;
 
     // Parse command line argumnets
     unsigned int convergence_check = (argc == 2 && !strcmp(argv[1], "-c"));
@@ -107,18 +106,6 @@ int main(int argc, char **argv)
     MPI_Comm_size(MPI_COMM_WORLD, &totalProcesses);
     // Get rank of current process
     MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
-    // Check if it is valid for the current problem(perfect square)
-    // dim is the # of blocks(processes) per row or column
-    dim = (int)sqrt(totalProcesses);
-
-    if (totalProcesses != 80 && dim * dim != totalProcesses) {
-        if (myRank == 0) {
-            fprintf(stderr, "Given # of processes is not a perfect square.\n");
-        }
-
-        MPI_Finalize();
-        return 0;
-    }
 
     // Read input
     Get_input(myRank, totalProcesses, &n, &m, &mits, &alpha, &tol, &relax);
@@ -131,14 +118,8 @@ int main(int argc, char **argv)
     unsigned int ndims = 2, reorder = 1, periods[2], dimSize[2];
     MPI_Comm cartComm;
 
-    if(totalProcesses != 80) {
-        dimSize[0] = dim;
-        dimSize[1] = dim;
-    }
-    else {
-        dimSize[0] = 10;
-        dimSize[1] = totalProcesses / dimSize[0];
-    }
+    dimSize[0] = dimSize[1] = 0;
+    MPI_Dims_create(totalProcesses, ndims, dimSize);
     
     periods[0] = periods[1] = 0;
     MPI_Cart_create(MPI_COMM_WORLD, ndims, dimSize, periods, reorder, &cartComm);
@@ -155,10 +136,10 @@ int main(int argc, char **argv)
     MPI_Cart_shift(cartComm, 1, 1, &neighbours[WEST], &neighbours[EAST]);
     // North and south 
     MPI_Cart_shift(cartComm, 0, 1, &neighbours[NORTH], &neighbours[SOUTH]);
-    // printf("Process %d(%d, %d) of %d --> NORTH: %d, SOUTH: %d, WEST: %d, EAST: %d, ARGUMENTS: %d, %d, %d, %lf, %lf, %lf\n", myRank, my_coords[0], my_coords[1], totalProcesses, neighbours[NORTH], neighbours[SOUTH], neighbours[WEST], neighbours[EAST], n, m, mits, alpha, tol, relax);
+    printf("Process %d(%d, %d) of %d --> NORTH: %d, SOUTH: %d, WEST: %d, EAST: %d, ARGUMENTS: %d, %d, %d, %lf, %lf, %lf\n", myRank, my_coords[0], my_coords[1], totalProcesses, neighbours[NORTH], neighbours[SOUTH], neighbours[WEST], neighbours[EAST], n, m, mits, alpha, tol, relax);
 
     // Create subgrid on each process
-    unsigned int columns = n/dimSize[0], rows = m/dimSize[1];
+    unsigned int columns = n/dimSize[1], rows = m/dimSize[0];
     double *u, *u_old, *tmp;
     unsigned int maxXcount = columns+2, maxYcount = rows+2;
     unsigned int allocCount = maxXcount*maxYcount;
@@ -198,9 +179,23 @@ int main(int argc, char **argv)
     double deltaY = (yUp-yBottom)/(m-1);
 
     double xStart = xLeft + my_coords[1] * columns * deltaX;
-    double yStart = yUp - (my_coords[0] + 1) * rows * deltaY;
+    double yStart = yBottom + (dimSize[0] - 1 - my_coords[0]) * rows * deltaY;
 
     // printf("Process %d (%d, %d) dimension:(%d,%d), start coords: (%lf, %lf)\n", myRank, my_coords[0], my_coords[1], columns, rows, xStart, yStart);
+    // Precalucate stuff to save time
+    double *fx_thing = (double*)malloc(columns*sizeof(double));
+    double *fy_thing = (double*)malloc(rows*sizeof(double));
+
+    int x,y;
+    for (x = 1; x < columns+1; x++) {
+        double fX = xStart + (x-1)*deltaX;
+        fx_thing[x-1] = 1.0-fX*fX;
+    }
+
+    for (y = 1; y < rows+1; y++) {
+        double fY = yStart + (y-1)*deltaY;
+        fy_thing[y-1] = 1.0-fY*fY;
+    }
 
     // Coefficients
     double cx = 1.0/(deltaX*deltaX);
@@ -210,136 +205,130 @@ int main(int argc, char **argv)
     iterationCount = 0;
     double local_square_error = HUGE_VAL;
 
+    // printf("Process %d rows=%d,columns=%d\n", myRank, rows, columns);
+
+    // Persistant communication: Initialize request parameters
+    MPI_Request send_requests_even[4], send_requests_odd[4], receive_requests_even[4], receive_requests_odd[4];
+    MPI_Status send_status[4], receive_status[4];
+
+    // Send North
+    MPI_Send_init(&SRC(1, 1), 1, row_t, neighbours[NORTH], 0, cartComm, &send_requests_even[NORTH]);
+    MPI_Send_init(&DST(1, 1), 1, row_t, neighbours[NORTH], 0, cartComm, &send_requests_odd[NORTH]);
+    // Send South
+    MPI_Send_init(&SRC(1, rows), 1, row_t, neighbours[SOUTH], 0, cartComm, &send_requests_even[SOUTH]);
+    MPI_Send_init(&DST(1, rows), 1, row_t, neighbours[SOUTH], 0, cartComm, &send_requests_odd[SOUTH]);
+    // Send West
+    MPI_Send_init(&SRC(1, 1), 1, col_t, neighbours[WEST], 0, cartComm, &send_requests_even[WEST]);
+    MPI_Send_init(&DST(1, 1), 1, col_t, neighbours[WEST], 0, cartComm, &send_requests_odd[WEST]);
+    // Send East
+    MPI_Send_init(&SRC(columns, 1), 1, col_t, neighbours[EAST], 0, cartComm, &send_requests_even[EAST]);
+    MPI_Send_init(&DST(columns, 1), 1, col_t, neighbours[EAST], 0, cartComm, &send_requests_odd[EAST]);
+
+    // Receive North
+    MPI_Recv_init(&SRC(1, 0), 1, row_t, neighbours[NORTH], 0, cartComm, &receive_requests_even[NORTH]);
+    MPI_Recv_init(&DST(1, 0), 1, row_t, neighbours[NORTH], 0, cartComm, &receive_requests_odd[NORTH]);
+    // Receive South
+    MPI_Recv_init(&SRC(1, rows + 1), 1, row_t, neighbours[SOUTH], 0, cartComm, &receive_requests_even[SOUTH]);
+    MPI_Recv_init(&DST(1, rows + 1), 1, row_t, neighbours[SOUTH], 0, cartComm, &receive_requests_odd[SOUTH]);
+    // Receive West
+    MPI_Recv_init(&SRC(0, 1), 1, col_t, neighbours[WEST], 0, cartComm, &receive_requests_even[WEST]);
+    MPI_Recv_init(&DST(0, 1), 1, col_t, neighbours[WEST], 0, cartComm, &receive_requests_odd[WEST]);
+    // Receive East
+    MPI_Recv_init(&SRC(columns+1, 1), 1, col_t, neighbours[EAST], 0, cartComm, &receive_requests_even[EAST]);
+    MPI_Recv_init(&DST(columns+1, 1), 1, col_t, neighbours[EAST], 0, cartComm, &receive_requests_odd[EAST]);
+
     double t1 = MPI_Wtime();
     MPI_Pcontrol(1);
 
-    double *fx_thing_buf = (double*)malloc((columns+2)*sizeof(double));
     /* Iterate as long as it takes to meet the convergence criterion */
     while (iterationCount < maxIterationCount) { 
-        MPI_Request send_requests[4], receive_requests[4];
-        MPI_Status send_status[4], receive_status[4];
-        // Non-blocking Isend of the 4 outer rows and columns to their corresponding neighbours (from u_old)
-
-        // North
-        MPI_Isend(&SRC(1, 1), 1, row_t, neighbours[NORTH], 0, cartComm, &send_requests[NORTH]);
-        // South
-        MPI_Isend(&SRC(1, rows), 1, row_t, neighbours[SOUTH], 0, cartComm, &send_requests[SOUTH]);
-        // West
-        MPI_Isend(&SRC(1, 1), 1, col_t, neighbours[WEST], 0, cartComm, &send_requests[WEST]);
-        // East
-        MPI_Isend(&SRC(columns, 1), 1, col_t, neighbours[EAST], 0, cartComm, &send_requests[EAST]);
+        // Non-blocking Isend of the 4 outer rows and columns to their corresponding neighbours
+        MPI_Startall(4, iterationCount % 2 == 0 ? send_requests_even : send_requests_odd);
 
         // Non-blocking Irecv of the 4 halo rows and columns from their corresponding neighbours
-
-        // North
-        MPI_Irecv(&SRC(1, 0), 1, row_t, neighbours[NORTH], 0, cartComm, &receive_requests[NORTH]);
-        // South
-        MPI_Irecv(&SRC(1, rows + 1), 1, row_t, neighbours[SOUTH], 0, cartComm, &receive_requests[SOUTH]);
-        // West
-        MPI_Irecv(&SRC(0, 1), 1, col_t, neighbours[WEST], 0, cartComm, &receive_requests[WEST]);
-        // East
-        MPI_Irecv(&SRC(columns+1, 1), 1, col_t, neighbours[EAST], 0, cartComm, &receive_requests[EAST]);
+        MPI_Startall(4, iterationCount % 2 == 0 ? receive_requests_even : receive_requests_odd);
+        
+        unsigned int x, y;
+        local_square_error = 0.0;
 
         // Calculate inner local values (to u)
-
-        unsigned int x, y;
-        double fX, fY, fy_thing;
-        local_square_error = 0.0;
-        double updateVal;
-        double f;
-
         #pragma omp parallel for reduction(+:local_square_error) collapse(2)
         for (y = 2; y < (maxYcount-2); y++)
         {
             for (x = 2; x < (maxXcount-2); x++)
             {
-                fY = yStart + (y-1)*deltaY;
-                fy_thing = 1.0-fY*fY;
-                if(y == 2 && iterationCount == 0) {
-                    fX = xStart + (x-1)*deltaX;
-                    fx_thing_buf[x-1] = 1.0-fX*fX;
-                }
-                
-                f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
-
-                updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
+                double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
+                double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
                                 (SRC(x,y-1) + SRC(x,y+1))*cy +
                                 SRC(x,y)*cc - f
                             )/cc;
-
                 DST(x,y) = SRC(x,y) - relax*updateVal;
                 local_square_error += updateVal*updateVal;
             }
-            
         }
         // Wait for the 4 halos to be received
-        MPI_Waitall(4, receive_requests, receive_status);
+        MPI_Waitall(4, iterationCount % 2 == 0 ? receive_requests_even : receive_requests_odd, receive_status);
 
         // Calculate the values of the 4 outer rows and columns which depend on the received halos (to u)
-        // Calculate 1st horizontal row
-        fY = yStart;
-        fy_thing = 1.0-fY*fY;
-
-        #pragma omp parallel for reduction (+:local_square_error)
+        
+        // Calculate top horizontal row
+        y = 1;
+        #pragma omp parallel for reduction(+:local_square_error)
         for (x = 1; x < (maxXcount-1); x++)
         {            
-            f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
-
-            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
+            double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
+            double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
                             (SRC(x,y-1) + SRC(x,y+1))*cy +
                             SRC(x,y)*cc - f
                         )/cc;
-
             DST(x,y) = SRC(x,y) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
         
-        // Calculate verical columns
-        // #pragma omp parallel for reduction (+:local_square_error)
+        // Calculate left verical column
+        x = 1;
+        #pragma omp parallel for reduction(+:local_square_error)
         for (y = 2; y < (maxYcount-2); y++)
         {
-            fY = yStart + (y-1)*deltaY;
-            fy_thing = 1.0-fY*fY;
-            
-            for (x = 1; x < (maxXcount-1); x += maxXcount-3)
-            {
-                if(y == 2 && iterationCount == 0) {
-                    fX = xStart + (x-1)*deltaX;
-                    fx_thing_buf[x-1] = 1.0-fX*fX;
-                }
-                
-                f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
-
-                updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                                (SRC(x,y-1) + SRC(x,y+1))*cy +
-                                SRC(x,y)*cc - f
-                            )/cc;
-
-                DST(x,y) = SRC(x,y) - relax*updateVal;
-                local_square_error += updateVal*updateVal;
-            }
-        }
-
-        // Calculate last horizontal row
-        fY = yStart + (maxYcount-3)*deltaY;
-        fy_thing = 1.0-fY*fY;
-
-        #pragma omp parallel for reduction(+:local_square_error)
-        for (int x = 1; x < (maxXcount-1); x++)
-        {
-            f = -alpha*fx_thing_buf[x-1]*fy_thing - 2.0*fx_thing_buf[x-1] - 2.0*fy_thing;
-
-            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
+            double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
+            double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
                             (SRC(x,y-1) + SRC(x,y+1))*cy +
                             SRC(x,y)*cc - f
                         )/cc;
+            DST(x,y) = SRC(x,y) - relax*updateVal;
+            local_square_error += updateVal*updateVal;
+        }
 
+        // Calculate right verical column
+        x = maxXcount - 2;
+        #pragma omp parallel for reduction(+:local_square_error)
+        for (y = 2; y < (maxYcount-2); y++)
+        {
+            double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
+            double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
+                            (SRC(x,y-1) + SRC(x,y+1))*cy +
+                            SRC(x,y)*cc - f
+                        )/cc;
+            DST(x,y) = SRC(x,y) - relax*updateVal;
+            local_square_error += updateVal*updateVal;
+        }
+
+        // Calculate bottom horizontal row
+        y = maxYcount-2;
+        #pragma omp parallel for reduction(+:local_square_error)
+        for (x = 1; x < (maxXcount-1); x++)
+        {
+            double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
+            double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
+                            (SRC(x,y-1) + SRC(x,y+1))*cy +
+                            SRC(x,y)*cc - f
+                        )/cc;
             DST(x,y) = SRC(x,y) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
 
         // Wait for the 4 outer rows to be sent
-        MPI_Waitall(4, send_requests, send_status);
+        MPI_Waitall(4, iterationCount % 2 == 0 ? send_requests_even : send_requests_odd, send_status);
 
         // Swap the buffers
         tmp = u_old;
@@ -361,6 +350,15 @@ int main(int argc, char **argv)
     MPI_Pcontrol(0);
 
     double localTime = t2 - t1;
+
+    // Free requests memory
+    for (int i=0;i<4;i++) {
+        MPI_Request_free(&send_requests_even[i]);
+        MPI_Request_free(&send_requests_odd[i]);
+        MPI_Request_free(&receive_requests_even[i]);
+        MPI_Request_free(&receive_requests_odd[i]);
+    }
+    
     // Calculate total time(max time of all processes)
     MPI_Reduce(&localTime, &totalTime, 1, MPI_DOUBLE, MPI_MAX, 0, cartComm);
     if (myRank == 0) {
@@ -392,7 +390,8 @@ int main(int argc, char **argv)
     // Free allocated space
     free(u);
     free(u_old);
-    free(fx_thing_buf);
+    free(fx_thing);
+    free(fy_thing);
 
     // Close MPI
     MPI_Finalize();

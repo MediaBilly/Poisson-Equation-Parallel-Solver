@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # JobName #
-#PBS -N JparmpiJacobi
+#PBS -N JhybridmpiJacobi
 
 #Which Queue to use #
 #PBS -q N10C80
@@ -10,7 +10,7 @@
 #PBS -l walltime=00:20:00
 
 # How many nodes and tasks per node
-#PBS -l select=1:ncpus=8:mpiprocs=1:ompthreads=8:mem=16400000kb
+#PBS -l select=10:ncpus=8:mpiprocs=2:ompthreads=4:mem=16400000kb
 
 #Change Working directory to SUBMIT directory
 cd $PBS_O_WORKDIR
