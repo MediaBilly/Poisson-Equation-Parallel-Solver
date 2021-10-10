@@ -178,7 +178,7 @@ int main(int argc, char **argv)
     double deltaY = (yUp-yBottom)/(m-1);
 
     double xStart = xLeft + my_coords[1] * columns * deltaX;
-    double yStart = yBottom + (dimSize[0] - 1 - my_coords[0]) * rows * deltaY;
+    double yStart = yBottom + my_coords[0] * rows * deltaY;
 
     // printf("Process %d (%d, %d) dimSize:(%d,%d) dimension:(%d,%d), start coords: (%lf, %lf)\n", myRank, my_coords[0], my_coords[1], dimSize[0], dimSize[1], columns, rows, xStart, yStart);
     // Precalucate stuff to save time
@@ -272,54 +272,54 @@ int main(int argc, char **argv)
         // Calculate the values of the 4 outer rows and columns which depend on the received halos (to u)
 
         // Calculate top horizontal row
-        y = 1;
+        // y = 1;
         for (x = 1; x < (maxXcount-1); x++)
         {            
-            f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
-            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
+            f = -alpha*fx_thing[x-1]*fy_thing[0] - 2.0*fx_thing[x-1] - 2.0*fy_thing[0];
+            updateVal = (	(SRC(x-1,1) + SRC(x+1,1))*cx +
+                            (SRC(x,0) + SRC(x,2))*cy +
+                            SRC(x,1)*cc - f
                         )/cc;
-            DST(x,y) = SRC(x,y) - relax*updateVal;
+            DST(x,1) = SRC(x,1) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
         
         // Calculate left verical column
-        x = 1;
+        // x = 1;
         for (y = 2; y < (maxYcount-2); y++)
         {
-            f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
-            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
+            f = -alpha*fx_thing[0]*fy_thing[y-1] - 2.0*fx_thing[0] - 2.0*fy_thing[y-1];
+            updateVal = (	(SRC(0,y) + SRC(2,y))*cx +
+                            (SRC(1,y-1) + SRC(1,y+1))*cy +
+                            SRC(1,y)*cc - f
                         )/cc;
-            DST(x,y) = SRC(x,y) - relax*updateVal;
+            DST(1,y) = SRC(1,y) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
 
         // Calculate right verical column
-        x = maxXcount - 2;
+        // x = maxXcount - 2;
         for (y = 2; y < (maxYcount-2); y++)
         {
-            f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
-            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
+            f = -alpha*fx_thing[maxXcount - 3]*fy_thing[y-1] - 2.0*fx_thing[maxXcount - 3] - 2.0*fy_thing[y-1];
+            updateVal = (	(SRC(maxXcount - 3,y) + SRC(maxXcount - 1,y))*cx +
+                            (SRC(maxXcount - 2,y-1) + SRC(maxXcount - 2,y+1))*cy +
+                            SRC(maxXcount - 2,y)*cc - f
                         )/cc;
-            DST(x,y) = SRC(x,y) - relax*updateVal;
+            DST(maxXcount - 2,y) = SRC(maxXcount - 2,y) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
 
         // Calculate bottom horizontal row
-        y = maxYcount-2;
+        // y = maxYcount-2;
         for (x = 1; x < (maxXcount-1); x++)
         {
-            f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
-            updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
+            f = -alpha*fx_thing[x-1]*fy_thing[maxYcount-3] - 2.0*fx_thing[x-1] - 2.0*fy_thing[maxYcount-3];
+            updateVal = (	(SRC(x-1,maxYcount-2) + SRC(x+1,maxYcount-2))*cx +
+                            (SRC(x,maxYcount-3) + SRC(x,maxYcount-1))*cy +
+                            SRC(x,maxYcount-2)*cc - f
                         )/cc;
-            DST(x,y) = SRC(x,y) - relax*updateVal;
+            DST(x,maxYcount-2) = SRC(x,maxYcount-2) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
 
@@ -373,7 +373,7 @@ int main(int argc, char **argv)
     }
 
     // Calculate total absolute error
-    double local_absolute_square_error = checkSolution(xStart, yStart, maxXcount, maxYcount, u, deltaX, deltaY, alpha);
+    double local_absolute_square_error = checkSolution(xStart, yStart, maxXcount, maxYcount, u_old, deltaX, deltaY, alpha);
     MPI_Reduce(&local_absolute_square_error, &absolute_square_error, 1, MPI_DOUBLE, MPI_SUM, 0, cartComm);
     if (myRank == 0) {
         printf("The error of the iterative solution is %g\n", sqrt(absolute_square_error)/(n * m));

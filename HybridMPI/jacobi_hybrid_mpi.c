@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     Get_input(myRank, totalProcesses, &n, &m, &mits, &alpha, &tol, &relax);
 
     if (myRank == 0) {
-        printf("Grid size: %dx%d\nProcesses: %d\n", n, m, totalProcesses);
+        printf("Grid size: %dx%d\nProcesses: %d\nThreads: %d\n", n, m, totalProcesses, omp_get_max_threads() * totalProcesses);
     }
 
     // Create cartesian topology
@@ -136,7 +136,7 @@ int main(int argc, char **argv)
     MPI_Cart_shift(cartComm, 1, 1, &neighbours[WEST], &neighbours[EAST]);
     // North and south 
     MPI_Cart_shift(cartComm, 0, 1, &neighbours[NORTH], &neighbours[SOUTH]);
-    printf("Process %d(%d, %d) of %d --> NORTH: %d, SOUTH: %d, WEST: %d, EAST: %d, ARGUMENTS: %d, %d, %d, %lf, %lf, %lf\n", myRank, my_coords[0], my_coords[1], totalProcesses, neighbours[NORTH], neighbours[SOUTH], neighbours[WEST], neighbours[EAST], n, m, mits, alpha, tol, relax);
+    // printf("Process %d(%d, %d) of %d --> NORTH: %d, SOUTH: %d, WEST: %d, EAST: %d, ARGUMENTS: %d, %d, %d, %lf, %lf, %lf\n", myRank, my_coords[0], my_coords[1], totalProcesses, neighbours[NORTH], neighbours[SOUTH], neighbours[WEST], neighbours[EAST], n, m, mits, alpha, tol, relax);
 
     // Create subgrid on each process
     unsigned int columns = n/dimSize[1], rows = m/dimSize[0];
@@ -179,7 +179,7 @@ int main(int argc, char **argv)
     double deltaY = (yUp-yBottom)/(m-1);
 
     double xStart = xLeft + my_coords[1] * columns * deltaX;
-    double yStart = yBottom + (dimSize[0] - 1 - my_coords[0]) * rows * deltaY;
+    double yStart = yBottom + my_coords[0] * rows * deltaY;
 
     // printf("Process %d (%d, %d) dimension:(%d,%d), start coords: (%lf, %lf)\n", myRank, my_coords[0], my_coords[1], columns, rows, xStart, yStart);
     // Precalucate stuff to save time
@@ -237,22 +237,28 @@ int main(int argc, char **argv)
     MPI_Recv_init(&SRC(columns+1, 1), 1, col_t, neighbours[EAST], 0, cartComm, &receive_requests_even[EAST]);
     MPI_Recv_init(&DST(columns+1, 1), 1, col_t, neighbours[EAST], 0, cartComm, &receive_requests_odd[EAST]);
 
+    int loop = 1;
+
     double t1 = MPI_Wtime();
     MPI_Pcontrol(1);
 
     /* Iterate as long as it takes to meet the convergence criterion */
-    while (iterationCount < maxIterationCount) { 
-        // Non-blocking Isend of the 4 outer rows and columns to their corresponding neighbours
-        MPI_Startall(4, iterationCount % 2 == 0 ? send_requests_even : send_requests_odd);
-
-        // Non-blocking Irecv of the 4 halo rows and columns from their corresponding neighbours
-        MPI_Startall(4, iterationCount % 2 == 0 ? receive_requests_even : receive_requests_odd);
-        
-        unsigned int x, y;
+    #pragma omp parallel
+    while (iterationCount < maxIterationCount && loop) { 
+        #pragma omp single nowait
         local_square_error = 0.0;
 
+        #pragma omp master
+        {
+            // Non-blocking Isend of the 4 outer rows and columns to their corresponding neighbours
+            MPI_Startall(4, iterationCount % 2 == 0 ? send_requests_even : send_requests_odd);
+
+            // Non-blocking Irecv of the 4 halo rows and columns from their corresponding neighbours
+            MPI_Startall(4, iterationCount % 2 == 0 ? receive_requests_even : receive_requests_odd);
+        }
+
         // Calculate inner local values (to u)
-        #pragma omp parallel for reduction(+:local_square_error) collapse(2)
+        #pragma omp for reduction(+:local_square_error) collapse(2)
         for (y = 2; y < (maxYcount-2); y++)
         {
             for (x = 2; x < (maxXcount-2); x++)
@@ -266,84 +272,93 @@ int main(int argc, char **argv)
                 local_square_error += updateVal*updateVal;
             }
         }
+
         // Wait for the 4 halos to be received
+        #pragma omp master
         MPI_Waitall(4, iterationCount % 2 == 0 ? receive_requests_even : receive_requests_odd, receive_status);
+
+        #pragma omp barrier
 
         // Calculate the values of the 4 outer rows and columns which depend on the received halos (to u)
         
         // Calculate top horizontal row
-        y = 1;
-        #pragma omp parallel for reduction(+:local_square_error)
+        // y = 1;
+        #pragma omp for reduction(+:local_square_error)
         for (x = 1; x < (maxXcount-1); x++)
         {            
-            double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
-            double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
+            double f = -alpha*fx_thing[x-1]*fy_thing[0] - 2.0*fx_thing[x-1] - 2.0*fy_thing[0];
+            double updateVal = (	(SRC(x-1,1) + SRC(x+1,1))*cx +
+                            (SRC(x,0) + SRC(x,2))*cy +
+                            SRC(x,1)*cc - f
                         )/cc;
-            DST(x,y) = SRC(x,y) - relax*updateVal;
+            DST(x,1) = SRC(x,1) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
         
         // Calculate left verical column
-        x = 1;
-        #pragma omp parallel for reduction(+:local_square_error)
+        // x = 1;
+        #pragma omp for reduction(+:local_square_error)
         for (y = 2; y < (maxYcount-2); y++)
         {
-            double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
-            double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
+            double f = -alpha*fx_thing[0]*fy_thing[y-1] - 2.0*fx_thing[0] - 2.0*fy_thing[y-1];
+            double updateVal = (	(SRC(0,y) + SRC(2,y))*cx +
+                            (SRC(1,y-1) + SRC(1,y+1))*cy +
+                            SRC(1,y)*cc - f
                         )/cc;
-            DST(x,y) = SRC(x,y) - relax*updateVal;
+            DST(1,y) = SRC(1,y) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
 
         // Calculate right verical column
-        x = maxXcount - 2;
-        #pragma omp parallel for reduction(+:local_square_error)
+        // x = maxXcount - 2;
+        #pragma omp for reduction(+:local_square_error)
         for (y = 2; y < (maxYcount-2); y++)
         {
-            double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
-            double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
+            double f = -alpha*fx_thing[maxXcount - 3]*fy_thing[y-1] - 2.0*fx_thing[maxXcount - 3] - 2.0*fy_thing[y-1];
+            double updateVal = (	(SRC(maxXcount - 3,y) + SRC(maxXcount - 1,y))*cx +
+                            (SRC(maxXcount - 2,y-1) + SRC(maxXcount - 2,y+1))*cy +
+                            SRC(maxXcount - 2,y)*cc - f
                         )/cc;
-            DST(x,y) = SRC(x,y) - relax*updateVal;
+            DST(maxXcount - 2,y) = SRC(maxXcount - 2,y) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
 
         // Calculate bottom horizontal row
-        y = maxYcount-2;
-        #pragma omp parallel for reduction(+:local_square_error)
+        // y = maxYcount-2;
+        #pragma omp for reduction(+:local_square_error)
         for (x = 1; x < (maxXcount-1); x++)
         {
-            double f = -alpha*fx_thing[x-1]*fy_thing[y-1] - 2.0*fx_thing[x-1] - 2.0*fy_thing[y-1];
-            double updateVal = (	(SRC(x-1,y) + SRC(x+1,y))*cx +
-                            (SRC(x,y-1) + SRC(x,y+1))*cy +
-                            SRC(x,y)*cc - f
+            double f = -alpha*fx_thing[x-1]*fy_thing[maxYcount-3] - 2.0*fx_thing[x-1] - 2.0*fy_thing[maxYcount-3];
+            double updateVal = (	(SRC(x-1,maxYcount-2) + SRC(x+1,maxYcount-2))*cx +
+                            (SRC(x,maxYcount-3) + SRC(x,maxYcount-1))*cy +
+                            SRC(x,maxYcount-2)*cc - f
                         )/cc;
-            DST(x,y) = SRC(x,y) - relax*updateVal;
+            DST(x,maxYcount-2) = SRC(x,maxYcount-2) - relax*updateVal;
             local_square_error += updateVal*updateVal;
         }
+        #pragma omp barrier
 
-        // Wait for the 4 outer rows to be sent
-        MPI_Waitall(4, iterationCount % 2 == 0 ? send_requests_even : send_requests_odd, send_status);
+        #pragma omp master
+        {
+            // Wait for the 4 outer rows to be sent
+            MPI_Waitall(4, iterationCount % 2 == 0 ? send_requests_even : send_requests_odd, send_status);
 
-        // Swap the buffers
-        tmp = u_old;
-        u_old = u;
-        u = tmp;
+            // Swap the buffers
+            tmp = u_old;
+            u_old = u;
+            u = tmp;
 
-        // Increase iteration count
-        iterationCount++;
+            // Increase iteration count
+            iterationCount++;
 
-        if (convergence_check) {
-            MPI_Allreduce(&local_square_error, &residual, 1, MPI_DOUBLE, MPI_SUM, cartComm);
-            if (sqrt(residual)/(n * m) <= maxAcceptableError) {
-                break;
+            if (convergence_check) {
+                MPI_Allreduce(&local_square_error, &residual, 1, MPI_DOUBLE, MPI_SUM, cartComm);
+                if (sqrt(residual)/(n * m) <= maxAcceptableError) {
+                    loop = 0;
+                }
             }
         }
+        #pragma omp barrier
     }
 
     double t2 = MPI_Wtime();
@@ -377,7 +392,7 @@ int main(int argc, char **argv)
     }
 
     // Calculate total absolute error
-    double local_absolute_square_error = checkSolution(xStart, yStart, maxXcount, maxYcount, u, deltaX, deltaY, alpha);
+    double local_absolute_square_error = checkSolution(xStart, yStart, maxXcount, maxYcount, u_old, deltaX, deltaY, alpha);
     MPI_Reduce(&local_absolute_square_error, &absolute_square_error, 1, MPI_DOUBLE, MPI_SUM, 0, cartComm);
     if (myRank == 0) {
         printf("The error of the iterative solution is %g\n", sqrt(absolute_square_error)/(n * m));
