@@ -1,4 +1,4 @@
-# Poisson-Equation
+# Poisson Equation Parallel Solver
 A parallel algorithm to solve Poisson equation using Jacobi with Successive Over-Relaxation(S.O.R) algorithm.
 
 The goal of this project was to develop a parallel program that numerically solves Poisson's equation:
