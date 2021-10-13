@@ -47,12 +47,9 @@ int main(int argc, char **argv)
 {
     int n, m, mits;
     double alpha, tol, relax;
-    // double maxAcceptableError;
-    // double error;
     int allocCount;
     int iterationCount, maxIterationCount;
     int totalGPUs = 1;
-    // double t1, t2;
 
 //    printf("Input n,m - grid dimension in x,y direction:\n");
     scanf("%d,%d", &n, &m);
@@ -122,7 +119,6 @@ int main(int argc, char **argv)
     iterationCount = 0;
     maxIterationCount = mits;
     double *tmp;
-    // maxAcceptableError = tol;
     double t1 = clock();
     while (iterationCount < maxIterationCount) {
         jacobiIteration<<<gridSize, blockSize>>>(n, m, alpha, relax, cx, cy, cc, d_u, d_u_old, d_fx_thing, d_fy_thing);

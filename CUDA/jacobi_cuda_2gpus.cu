@@ -47,12 +47,9 @@ int main(int argc, char **argv)
 {
     int n, m, mits;
     double alpha, tol, relax;
-    // double maxAcceptableError;
-    // double error;
     int allocCount;
     int iterationCount, maxIterationCount;
     int totalGPUs;
-    // double t1, t2;
 
 //    printf("Input n,m - grid dimension in x,y direction:\n");
     scanf("%d,%d", &n, &m);
