@@ -44,6 +44,16 @@ The benchmarks below, were made in a cluster provided by our university called `
       - 1792 CUDA cores
       - RAM 8GB
       - Memory Bandwidth: 243 GB/s
+
+In the benchmarks below, Speedup and Efficiency are defined as follows: 
+  - The Speedup is calculated as `S/p` where `S` is the sequeltial time and `p` is the parallel time
+  - The Efficiency is calculated as `s/t` where `s` is the speedup and `t` is the number of processes or threads used.
+
+The default parameters used are:
+  - alpha - Helmholtz constant = 0.8
+  - relax - successive over-relaxation parameter = 1.0
+  - tol - error tolerance for the iterrative solver = 1e-13
+  - mits - maximum solver iterations = 50
       
 Here are the benchmarks we made in each program using the above cluster:
 
