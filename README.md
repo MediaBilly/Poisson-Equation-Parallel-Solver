@@ -198,7 +198,8 @@ Here are the benchmarks we made in each program using the above cluster:
 
 *The big grid could not be computed with 1 GPU because of insufficient VRAM.
 
-## Conclusion: as you can see, the CUDA program has the best performance because GPUs have tons of threads (which means they can execute tons of computations in parallel), and extremely fast vram.
+## Conclusion: 
+As you can see, the CUDA program has the best performance because GPUs have tons of threads (which means they can execute tons of computations in parallel), and extremely fast vram.
 
 ## Contributors:
 1. [Vasilis Kiriakopoulos](https://github.com/MediaBilly)
